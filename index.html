@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Stadium Gate Scanner</title>
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #000; color: #fff; font-family: system-ui, -apple-system, sans-serif; text-align: center; }
+    .nav { display: flex; justify-content: space-around; padding: 12px; background: #1c1c1e; }
+    select { font-size: 16px; font-weight: bold; padding: 8px 12px; border-radius: 8px; background: #2c2c2e; color: #fff; border: 1px solid #555; }
+    #reader { width: 100%; max-width: 360px; margin: 10px auto; border-radius: 12px; overflow: hidden; }
+    #screen {
+      position: fixed; bottom: 0; left: 0; right: 0; height: 42%;
+      display: flex; flex-direction: column; justify-content: center; align-items: center;
+      background: #1c1c1e; font-size: 26px; font-weight: 900; text-transform: uppercase;
+      padding: 15px; border-top: 2px solid #333;
+    }
+    .VALID { background: #059669 !important; }
+    .WRONG_DAY { background: #d97706 !important; }
+    .WRONG_GATE { background: #7c3aed !important; }
+    .DUPLICATE { background: #dc2626 !important; }
+    .FAKE { background: #7f1d1d !important; }
+    .sub { font-size: 16px; font-weight: normal; margin-top: 8px; text-transform: none; }
+  </style>
+</head>
+<body>
+
+  <div class="nav">
+    <div>
+      Day:
+      <select id="selDay">
+        <option value="1">DAY 1</option>
+        <option value="2">DAY 2</option>
+      </select>
+    </div>
+    <div>
+      Gate:
+      <select id="selGate">
+        <option value="NORTH">Gate North</option>
+        <option value="SOUTH">Gate South</option>
+        <option value="EAST">Gate East</option>
+        <option value="WEST">Gate West</option>
+      </select>
+    </div>
+  </div>
+
+  <div id="reader"></div>
+
+  <div id="screen">
+    <span>READY TO SCAN</span>
+    <div class="sub">Point camera at ticket QR</div>
+  </div>
+
+  <script>
+    const SECRET_KEY = "STADIUM_SUPER_SECRET_KEY_2026";
+    const scannedSet = new Set();
+    const screen = document.getElementById('screen');
+    let locked = false;
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function beep(freq, duration) {
+      try {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.frequency.value = freq;
+        osc.start();
+        setTimeout(() => osc.stop(), duration);
+      } catch(e) {}
+    }
+
+    async function verifyTicketHMAC(payload, receivedSig) {
+      const enc = new TextEncoder();
+      const key = await crypto.subtle.importKey(
+        "raw",
+        enc.encode(SECRET_KEY),
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["verify"]
+      );
+      let b64 = receivedSig.replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      const sigBytes = new Uint8Array([...window.atob(b64)].map(c => c.charCodeAt(0)));
+      return await crypto.subtle.verify("HMAC", key, sigBytes, enc.encode(payload));
+    }
+
+    async function onScan(decodedText) {
+      if (locked) return;
+      locked = true;
+
+      const [payload, sig] = decodedText.split('.');
+      if (!payload || !sig) {
+        show('FAKE', 'INVALID CODE', 'Unrecognized ticket');
+        beep(150, 400);
+        return unlock(1000);
+      }
+
+      const [ticketId, ticketDay, ticketGate] = payload.split('|');
+      const activeDay = parseInt(document.getElementById('selDay').value);
+      const activeGate = document.getElementById('selGate').value;
+
+      const isAuthentic = await verifyTicketHMAC(payload, sig);
+      if (!isAuthentic) {
+        show('FAKE', 'COUNTERFEIT / FAKE', 'Security signature mismatch');
+        beep(150, 500);
+        return unlock(1200);
+      }
+
+      if (parseInt(ticketDay) !== activeDay) {
+        show('WRONG_DAY', `WRONG DAY! (Day ${ticketDay})`, `Ticket valid ONLY for Day ${ticketDay}`);
+        beep(350, 350);
+        return unlock(1200);
+      }
+
+      if (ticketGate !== activeGate) {
+        show('WRONG_GATE', `GO TO ${ticketGate} GATE`, `This pass is for ${ticketGate} entrance`);
+        beep(450, 350);
+        return unlock(1400);
+      }
+
+      if (scannedSet.has(ticketId)) {
+        show('DUPLICATE', 'ALREADY SCANNED', `Pass ${ticketId} entered previously`);
+        beep(220, 500);
+        return unlock(1200);
+      }
+
+      scannedSet.add(ticketId);
+      show('VALID', 'ACCESS GRANTED', `${ticketId} • Gate ${ticketGate}`);
+      beep(880, 150);
+      unlock(600);
+    }
+
+    function show(cls, title, sub) {
+      screen.className = cls;
+      screen.innerHTML = `<span>${title}</span><div class="sub">${sub}</div>`;
+    }
+
+    function unlock(ms) {
+      setTimeout(() => {
+        locked = false;
+        screen.className = '';
+        screen.innerHTML = '<span>READY TO SCAN</span><div class="sub">Point camera at ticket QR</div>';
+      }, ms);
+    }
+
+    new Html5QrcodeScanner("reader", {
+      fps: 25,
+      qrbox: { width: 220, height: 220 },
+      aspectRatio: 1.0
+    }).render(onScan);
+  </script>
+</body>
+</html>
